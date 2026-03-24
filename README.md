@@ -21,7 +21,7 @@ Drop-in USB update package for the QIDI Q2 3D printer running mainline Klipper w
 
 1. Copy the `QD_Update/` folder to a USB stick (FAT32)
 2. Insert USB stick into the Q2
-3. The stock update client will detect and install the update automatically
+3. On the Q2 touchscreen, go to **Settings** → **Offline Update** to start the update
 
 ## Hardware
 
