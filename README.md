@@ -37,6 +37,48 @@ Drop-in USB update package for the QIDI Q2 3D printer running mainline Klipper w
 - MCU and THR binaries are flashed automatically by the Q2's update client
 - Back up your `printer.cfg` and `saved_variables.cfg` before updating
 
+## Background: Why This Exists
+
+The QIDI Q2 ships with a heavily modified Klipper fork. Getting mainline Klipper running on it requires dealing with several hardware and software quirks that aren't documented anywhere. This package is the result of reverse-engineering the stock firmware and finding a path that doesn't require specialized hardware.
+
+### The Problem
+
+The Q2's main MCU is a **GD32F425** — a Chinese clone of the STM32F407. It's mostly compatible, but its USB OTG peripheral has a silicon bug: it needs extra initialization delays that real STM32s don't. Without a workaround, the MCU fails to enumerate over USB and Klipper can't communicate with it.
+
+Additionally, Klipper doesn't natively support the **CS1237** load cell ADC used on the Q2's bed probe. Stock QIDI firmware handles this via proprietary `.so` extensions that aren't available for mainline Klipper.
+
+### The Hard Way (ST-Link + Katapult)
+
+The "proper" approach to running custom firmware on STM32/GD32 boards is:
+
+1. Buy an ST-Link programmer (~$10)
+2. Open the printer and connect the ST-Link to the MCU's SWD header
+3. Flash the Katapult bootloader (replaces the stock 32KiB bootloader with an 8KiB one)
+4. Flash Klipper via Katapult over USB (repeatable, no ST-Link needed after first flash)
+5. Repeat for the THR board (but via UART instead of USB)
+
+This works, but it requires hardware, disassembly, and comfort with SWD debugging. It also changes the bootloader, which means the stock USB offline update mechanism no longer works. If something goes wrong, you need the ST-Link again to recover.
+
+### The Easy Way (This Package)
+
+We discovered that the stock Q2 update mechanism is simpler than expected:
+
+- **SOC updates** are just `.deb` packages — standard Debian packages installed via `dpkg`. No encrypted containers, no signatures.
+- **MCU/THR updates** use QIDI's `hid-flash` tool, which speaks USB HID to the stock 32KiB bootloader. The stock bootloader is perfectly capable of flashing custom Klipper — it doesn't care what binary you give it.
+- **The USB offline update flow** (`QD_Update/` folder on a USB stick) triggers all three: SOC .deb install, MCU flash, THR flash. All from the touchscreen, no SSH or hardware required.
+
+### Key Decisions
+
+**Keep the stock 32KiB bootloader** — By compiling Klipper with `FLASH_APPLICATION_ADDRESS=0x8008000` (matching the stock bootloader offset) instead of Katapult's 8KiB offset, we can flash via the existing bootloader. No ST-Link, no Katapult, no disassembly. Recovery is always possible via another USB offline update.
+
+**Patch Klipper, don't fork it** — Our changes are minimal: a GD32 USB OTG init delay in `usbotg.c`, a Kconfig option to enable it, and the CS1237 load cell driver. Everything else is upstream mainline Klipper. This means future Klipper updates can be rebased with minimal effort.
+
+**Pull the live rootfs instead of building from scratch** — Rather than trying to install Klipper into a rootfs image from inside a Docker container (which would require ARM64 emulation), we set up a working Q2 with mainline Klipper via KIAUH, then pulled the entire rootfs via `e2image` over SSH. This captures a known-good, tested configuration.
+
+**Use the stock .deb format** — QIDI's update client expects a specific package naming convention (`QD_Q2_SOC_*`, `QD_Q2_MCU`, `QD_Q2_THR`). By packaging our update the same way, we piggyback on the existing update infrastructure instead of building our own.
+
+**FTDI latency fix via udev rule** — The THR board connects via an FTDI FT232R USB-to-serial converter. The default Linux driver sets a 16ms latency timer, which causes Klipper timing errors (trsync). A udev rule (`99-ftdi-latency.rules`) sets it to 1ms. This is included in the SOC .deb and applied automatically.
+
 ## Recovery
 
 If something goes wrong after flashing:
